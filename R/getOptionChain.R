@@ -1,18 +1,18 @@
 `getOptionChain` <-
-function(Symbols, Exp=NULL, src="yahoo", ...) {
-  Call <- paste("getOptionChain",src,sep=".")
-  if(missing(Exp)) {
-    do.call(Call, list(Symbols=Symbols, ...))
-  } else {
-    do.call(Call, list(Symbols=Symbols, Exp=Exp, ...))
+  function(Symbols, Exp=NULL, src="yahoo", ...) {
+    Call <- paste("getOptionChain",src,sep=".")
+    if(missing(Exp)) {
+      do.call(Call, list(Symbols=Symbols, ...))
+    } else {
+      do.call(Call, list(Symbols=Symbols, Exp=Exp, ...))
+    }
   }
-}
 
 getOptionChain.yahoo <- function(Symbols, Exp, ...)
 {
   if(!requireNamespace("jsonlite", quietly=TRUE))
     stop("package:",dQuote("jsonlite"),"cannot be loaded.")
-
+  
   NewToOld <- function(x) {
     if(is.null(x) || length(x) < 1)
       return(NULL)
@@ -20,14 +20,15 @@ getOptionChain.yahoo <- function(Symbols, Exp, ...)
     names(x) <- tolower(gsub("[[:space:]]", "", names(x)))
     # set cleaned up colnames to current output colnames
     d <- with(x, data.frame(Strike=strike, Last=lastprice, Chg=change,
-      Bid=bid, Ask=ask, Vol=volume, OI=openinterest,
-      row.names=contractsymbol, stringsAsFactors=FALSE))
+                            Bid=bid, Ask=ask, Vol=volume, OI=openinterest,
+                            row.names=contractsymbol, stringsAsFactors=FALSE))
+
     # remove commas from the numeric data
     d[] <- lapply(d, gsub, pattern=",", replacement="", fixed=TRUE)
     d[] <- lapply(d, type.convert, as.is=TRUE)
     d
   }
-
+  
   # Don't check the expiry date if we're looping over dates we just scraped
   checkExp <- !hasArg(".expiry.known") || !match.call(expand.dots=TRUE)$.expiry.known
   # Construct URL
@@ -35,15 +36,16 @@ getOptionChain.yahoo <- function(Symbols, Exp, ...)
   # Add expiry date to URL
   if(!checkExp)
     urlExp <- paste0(urlExp, "?&date=", Exp)
-
+  
   # Fetch data (jsonlite::fromJSON will handle connection)
   tbl <- jsonlite::fromJSON(urlExp)
-
+  
   # Only return nearest expiry (default served by Yahoo Finance), unless the user specified Exp
   if(!missing(Exp) && checkExp) {
     all.expiries <- tbl$optionChain$result$expirationDates[[1]]
     all.expiries.posix <- .POSIXct(as.numeric(all.expiries), tz="UTC")
-
+    
+    # this is a recursive command
     if(is.null(Exp)) {
       # Return all expiries if Exp = NULL
       out <- lapply(all.expiries, getOptionChain.yahoo, Symbols=Symbols, .expiry.known=TRUE)
@@ -51,7 +53,9 @@ getOptionChain.yahoo <- function(Symbols, Exp, ...)
       # format to "%b.%d.%Y" ("%Y-%m-%d wouldn't be good, since names should
       # start with a letter or dot--naming things is hard).
       return(setNames(out, format(all.expiries.posix, "%b.%d.%Y")))
-    } else {
+    }     
+    
+    else {
       # Ensure data exist for user-provided expiry date(s)
       if(inherits(Exp, "Date"))
         valid.expiries <- as.Date(all.expiries.posix) %in% Exp
@@ -60,12 +64,12 @@ getOptionChain.yahoo <- function(Symbols, Exp, ...)
       else if(is.character(Exp)) {
         expiry.range <- range(unlist(lapply(Exp, .parseISO8601, tz="UTC")))
         valid.expiries <- all.expiries.posix >= expiry.range[1] &
-                          all.expiries.posix <= expiry.range[2]
+          all.expiries.posix <= expiry.range[2]
       }
       if(all(!valid.expiries))
         stop("Provided expiry date(s) not found. Available dates are: ",
              paste(as.Date(all.expiries.posix), collapse=", "))
-
+      
       expiry.subset <- all.expiries[valid.expiries]
       if(length(expiry.subset) == 1)
         return(getOptionChain.yahoo(Symbols, expiry.subset, .expiry.known=TRUE))
@@ -76,9 +80,22 @@ getOptionChain.yahoo <- function(Symbols, Exp, ...)
       }
     }
   }
-
+  
   dftables <- lapply(tbl$optionChain$result$options[[1]][,c("calls","puts")], `[[`, 1L)
-  dftables <- mapply(NewToOld, x=dftables, SIMPLIFY=FALSE)
+  #dftables <- mapply(NewToOld, x=dftables, SIMPLIFY=FALSE)
+  
+  
+  fix_date <- function(x) {
+    if(class(x) == "list") 
+      return(NULL)
+    x$expiration <- .POSIXct(as.numeric(x$expiration), tz="UTC")
+    x$lastTradeDate <- .POSIXct(as.numeric(x$lastTradeDate), tz="UTC")
+    x <- x[,sort(names(x))]
+    return(x)
+  }
+  
+  dftables <- lapply(dftables,fix_date)
+  dftables <- dftables[!sapply(dftables,is.null)]
   dftables
 }
 
